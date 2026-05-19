@@ -1,0 +1,34 @@
+{
+  "name": "acederivfx",
+  "version": "2.0.0",
+  "description": "Deriv-X Bot - Automated Trading Terminal for Binary Options",
+  "type": "module",
+  "main": "src/index.jsx",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint src --ext .jsx,.js"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.0",
+    "vite": "^5.2.0",
+    "eslint": "^9.0.0",
+    "eslint-plugin-react": "^7.34.0"
+  },
+  "keywords": [
+    "deriv",
+    "trading",
+    "bot",
+    "binary-options",
+    "automated-trading",
+    "websocket",
+    "react"
+  ],
+  "author": "DRUPAL23",
+  "license": "MIT"
+}
