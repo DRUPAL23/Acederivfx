@@ -3,6 +3,10 @@ import { useState, useEffect, useRef, useCallback } from "react";
 // ── Deriv WebSocket endpoint ──────────────────────────────────────────────────
 const WS_URL = "wss://ws.binaryws.com/websockets/v3?app_id=1089";
 
+// ── LocalStorage keys ─────────────────────────────────────────────────────────
+const STORAGE_KEY_API = "derivApiKey";
+const STORAGE_KEY_REMEMBER = "derivRememberMe";
+
 // ── Colour palette & shared styles ───────────────────────────────────────────
 const C = {
   bg0: "#050810",
@@ -30,9 +34,9 @@ const fmt = (n, d = 2) => (n == null ? "—" : Number(n).toFixed(d));
 const fmtTime = (ts) => new Date(ts * 1000).toLocaleTimeString();
 const uid = () => Math.floor(Math.random() * 1e9);
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 // COMPONENT
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 export default function DerivBot() {
   // ── connection / auth state ────────────────────────────────────────────────
   const [apiKey, setApiKey] = useState("");
@@ -42,6 +46,8 @@ export default function DerivBot() {
   const [account, setAccount] = useState(null);
   const [balance, setBalance] = useState(null);
   const [error, setError] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   // ── market / bot state ────────────────────────────────────────────────────
   const [symbol, setSymbol] = useState("R_100");
@@ -77,6 +83,24 @@ export default function DerivBot() {
   const log = useCallback((msg, type = "info") => {
     const entry = { msg, type, time: new Date().toLocaleTimeString() };
     setLogs((prev) => [...prev.slice(-199), entry]);
+  }, []);
+
+  // ── Load saved API key on mount ────────────────────────────────────────────
+  useEffect(() => {
+    const savedKey = localStorage.getItem(STORAGE_KEY_API);
+    const savedRemember = localStorage.getItem(STORAGE_KEY_REMEMBER) === "true";
+
+    if (savedKey && savedRemember) {
+      setApiKey(savedKey);
+      setRememberMe(true);
+      setIsLoading(true);
+      // Auto-connect after a brief delay
+      setTimeout(() => {
+        connectWebSocket(savedKey);
+      }, 300);
+    } else {
+      setIsLoading(false);
+    }
   }, []);
 
   // ── Canvas sparkline ──────────────────────────────────────────────────────
@@ -125,7 +149,7 @@ export default function DerivBot() {
     ws.current.send(JSON.stringify({ ...payload, req_id }));
   }, []);
 
-  const connect = useCallback((key) => {
+  const connectWebSocket = useCallback((key) => {
     if (ws.current) ws.current.close();
     const socket = new WebSocket(WS_URL);
     ws.current = socket;
@@ -151,6 +175,7 @@ export default function DerivBot() {
     socket.onerror = () => {
       setError("WebSocket error. Check API key / network.");
       log("WebSocket error", "error");
+      setIsLoading(false);
     };
 
     socket.onclose = () => {
@@ -164,6 +189,7 @@ export default function DerivBot() {
     if (msg.error) {
       setError(msg.error.message);
       log(`ERROR: ${msg.error.message}`, "error");
+      setIsLoading(false);
       return;
     }
 
@@ -172,6 +198,7 @@ export default function DerivBot() {
       setAccount(acc);
       setAuthorized(true);
       setError("");
+      setIsLoading(false);
       log(`Authorized as ${acc.email} | ${acc.currency} account`, "success");
       // subscribe balance
       ws.current?.send(JSON.stringify({ balance: 1, subscribe: 1, req_id: uid() }));
@@ -235,7 +262,7 @@ export default function DerivBot() {
         );
       }
     }
-  }, [symbol, send]);
+  }, [symbol, send, log]);
 
   const handleAutoBotNext = useCallback(
     (lastContract) => {
@@ -264,7 +291,7 @@ export default function DerivBot() {
         : contractType;
       placeOrder(nextType, botRef.current.stake);
     },
-    [martingale, martFactor, autoStake, contractType]
+    [martingale, martFactor, autoStake, contractType, log]
   );
 
   const placeOrder = useCallback(
@@ -293,8 +320,20 @@ export default function DerivBot() {
   // ── Start / Stop handlers ─────────────────────────────────────────────────
   const handleAuth = () => {
     if (!inputKey.trim()) { setError("Enter your Deriv API key"); return; }
-    setApiKey(inputKey.trim());
-    connect(inputKey.trim());
+    const key = inputKey.trim();
+    setApiKey(key);
+    
+    // Save to localStorage if remember me is checked
+    if (rememberMe) {
+      localStorage.setItem(STORAGE_KEY_API, key);
+      localStorage.setItem(STORAGE_KEY_REMEMBER, "true");
+    } else {
+      localStorage.removeItem(STORAGE_KEY_API);
+      localStorage.removeItem(STORAGE_KEY_REMEMBER);
+    }
+    
+    setIsLoading(true);
+    connectWebSocket(key);
   };
 
   const handleDisconnect = () => {
@@ -309,6 +348,14 @@ export default function DerivBot() {
     setLogs([]);
     botRef.current.running = false;
     setBotRunning(false);
+    setIsLoading(false);
+  };
+
+  const handleForgetCredentials = () => {
+    localStorage.removeItem(STORAGE_KEY_API);
+    localStorage.removeItem(STORAGE_KEY_REMEMBER);
+    setRememberMe(false);
+    handleDisconnect();
   };
 
   const startAutoBot = () => {
@@ -342,7 +389,7 @@ export default function DerivBot() {
   const totalPnl = trades.reduce((s, t) => s + t.profit, 0);
   const winRate = trades.length ? ((wins / trades.length) * 100).toFixed(1) : "—";
 
-  // ── UI ────────────────────────────────────────────────────────────────────
+  // ── UI ─────────────────────────────────────────────────────────────────────
   const symbols = [
     { v: "R_10", l: "Volatility 10" },
     { v: "R_25", l: "Volatility 25" },
@@ -359,9 +406,27 @@ export default function DerivBot() {
 
   const logColor = { info: C.text, success: C.green, error: C.red, warn: C.yellow };
 
-  // ─────────────────────────────────────────────────────────────────────────
+  // Show loading spinner while connecting
+  if (isLoading && authorized === false) {
+    return (
+      <div style={{ fontFamily: "'Courier New', monospace", background: C.bg0, minHeight: "100vh", color: C.text, padding: "0", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <style>{`
+          @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap');
+          @keyframes spin { 0%{transform:rotate(0deg)} 100%{transform:rotate(360deg)} }
+          @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        `}</style>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ width: 60, height: 60, border: `2px solid ${C.border}`, borderTop: `2px solid ${C.accent}`, borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 20px" }} />
+          <div style={{ fontSize: 16, color: C.accent, letterSpacing: 2, marginBottom: 10 }}>CONNECTING…</div>
+          <div style={{ fontSize: 12, color: C.muted }}>Auto-connecting with saved credentials</div>
+        </div>
+      </div>
+    );
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
   // RENDER
-  // ─────────────────────────────────────────────────────────────────────────
+  // ───────────────────────────────────────────────────────────────────────────
   return (
     <div style={{ fontFamily: "'Courier New', monospace", background: C.bg0, minHeight: "100vh", color: C.text, padding: "0" }}>
       {/* ── Google Font import trick via style tag ── */}
@@ -387,7 +452,7 @@ export default function DerivBot() {
       {/* ── HEADER ── */}
       <div style={{ background: C.bg1, borderBottom: `1px solid ${C.border}`, padding: "12px 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ width: 36, height: 36, borderRadius: 8, background: C.accent, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 16, color: C.bg0 }}>DX</div>
+          <div style={{ width: 36, height: 36, borderRadius: 8, background: C.accent, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 18, color: C.bg0 }}>X</div>
           <div>
             <div style={{ fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 18, color: C.white, letterSpacing: 2 }}>DERIV-X BOT</div>
             <div style={{ fontSize: 10, color: C.muted, letterSpacing: 1 }}>AUTOMATED TRADING TERMINAL v2.0</div>
@@ -415,6 +480,11 @@ export default function DerivBot() {
               DISCONNECT
             </button>
           )}
+          {authorized && (
+            <button onClick={handleForgetCredentials} className="btn-danger" style={{ background: "#5f1515", border: `1px solid ${C.red}`, color: C.red, borderRadius: 4, padding: "4px 12px", fontSize: 11, cursor: "pointer", letterSpacing: 1 }}>
+              FORGET
+            </button>
+          )}
         </div>
       </div>
 
@@ -437,10 +507,25 @@ export default function DerivBot() {
                 onKeyDown={(e) => e.key === "Enter" && handleAuth()}
                 style={{ flex: 1, background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 4, padding: "8px 12px", color: C.white, fontFamily: "inherit", fontSize: 13, outline: "none" }}
               />
-              <button onClick={handleAuth} className="btn-primary" style={{ background: C.accent, border: "none", color: C.bg0, borderRadius: 4, padding: "8px 20px", fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 13, cursor: "pointer", letterSpacing: 1 }}>
+              <button onClick={handleAuth} className="btn-primary" style={{ background: C.accent, border: "none", color: C.bg0, borderRadius: 4, padding: "8px 20px", fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 12, cursor: "pointer", letterSpacing: 1 }}>
                 CONNECT
               </button>
             </div>
+            
+            {/* Remember Me checkbox */}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 11, color: C.text, marginTop: 12 }}>
+              <input 
+                type="checkbox" 
+                checked={rememberMe} 
+                onChange={(e) => setRememberMe(e.target.checked)}
+                style={{ accentColor: C.accent, cursor: "pointer" }} 
+              />
+              <span style={{ letterSpacing: 0.5 }}>Remember me on this device</span>
+            </label>
+            <div style={{ fontSize: 10, color: C.red, marginTop: 8, letterSpacing: 0.5 }}>
+              ⚠ Only enable on trusted devices. API key stored locally in browser.
+            </div>
+
             {error && <div style={{ marginTop: 10, color: C.red, fontSize: 12 }}>⚠ {error}</div>}
             <div style={{ marginTop: 14, fontSize: 10, color: C.muted }}>
               ⓘ Uses <span style={{ color: C.accent }}>wss://ws.binaryws.com/websockets/v3</span> · app_id=1089 (demo)
@@ -517,7 +602,7 @@ export default function DerivBot() {
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
                     {["CALL", "PUT"].map(t => (
                       <button key={t} onClick={() => setContractType(t)}
-                        style={{ background: contractType === t ? (t === "CALL" ? C.green : C.red) : C.bg2, border: `1px solid ${contractType === t ? (t === "CALL" ? C.green : C.red) : C.border}`, color: contractType === t ? C.bg0 : C.text, borderRadius: 4, padding: "6px 0", cursor: "pointer", fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 12, letterSpacing: 1, transition: "all 0.15s" }}>
+                        style={{ background: contractType === t ? (t === "CALL" ? C.green : C.red) : C.bg2, border: `1px solid ${contractType === t ? (t === "CALL" ? C.green : C.red) : C.border}`, color: contractType === t ? C.bg0 : C.text, borderRadius: 4, padding: "6px 0", fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 11, cursor: "pointer", letterSpacing: 1 }}>
                         {t === "CALL" ? "▲ RISE" : "▼ FALL"}
                       </button>
                     ))}
@@ -529,19 +614,21 @@ export default function DerivBot() {
                   <div>
                     <label style={{ fontSize: 9, color: C.muted, letterSpacing: 2, display: "block", marginBottom: 4 }}>STAKE ($)</label>
                     <input type="number" value={stake} onChange={e => setStake(e.target.value)} min="0.35"
-                      style={{ width: "100%", background: C.bg2, border: `1px solid ${C.border}`, color: C.white, borderRadius: 4, padding: "6px 8px", fontFamily: "inherit", fontSize: 13, outline: "none" }} />
+                      style={{ width: "100%", background: C.bg2, border: `1px solid ${C.border}`, color: C.white, borderRadius: 4, padding: "6px 8px", fontFamily: "inherit", fontSize: 13, outline: "none" }}
+                    />
                   </div>
                   <div>
                     <label style={{ fontSize: 9, color: C.muted, letterSpacing: 2, display: "block", marginBottom: 4 }}>TICKS</label>
                     <input type="number" value={duration} onChange={e => setDuration(e.target.value)} min="1" max="10"
-                      style={{ width: "100%", background: C.bg2, border: `1px solid ${C.border}`, color: C.white, borderRadius: 4, padding: "6px 8px", fontFamily: "inherit", fontSize: 13, outline: "none" }} />
+                      style={{ width: "100%", background: C.bg2, border: `1px solid ${C.border}`, color: C.white, borderRadius: 4, padding: "6px 8px", fontFamily: "inherit", fontSize: 13, outline: "none" }}
+                    />
                   </div>
                 </div>
 
                 {/* Manual trade button */}
                 <button onClick={() => placeOrder()} disabled={!!openContract}
                   className="btn-primary"
-                  style={{ background: openContract ? C.muted : C.accent, border: "none", color: C.bg0, borderRadius: 4, padding: "10px 0", fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 14, cursor: openContract ? "not-allowed" : "pointer", letterSpacing: 2, transition: "background 0.15s" }}>
+                  style={{ background: openContract ? C.muted : C.accent, border: "none", color: C.bg0, borderRadius: 4, padding: "10px 0", fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, cursor: openContract ? "default" : "pointer", letterSpacing: 1 }}>
                   {openContract ? "TRADE OPEN…" : `▶ ${contractType === "CALL" ? "BUY RISE" : "BUY FALL"}`}
                 </button>
 
@@ -550,7 +637,7 @@ export default function DerivBot() {
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
                     {["manual", "auto"].map(m => (
                       <button key={m} onClick={() => setBotMode(m)}
-                        style={{ background: botMode === m ? C.bg0 : "transparent", border: `1px solid ${botMode === m ? C.accent : C.border}`, color: botMode === m ? C.accent : C.muted, borderRadius: 4, padding: "4px 0", cursor: "pointer", fontSize: 11, letterSpacing: 1, fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, transition: "all 0.15s" }}>
+                        style={{ background: botMode === m ? C.bg0 : "transparent", border: `1px solid ${botMode === m ? C.accent : C.border}`, color: botMode === m ? C.accent : C.muted, borderRadius: 4, padding: "6px 0", fontFamily: "'Rajdhani', sans-serif", fontWeight: 600, cursor: "pointer", fontSize: 11, letterSpacing: 1 }}>
                         {m.toUpperCase()}
                       </button>
                     ))}
@@ -562,12 +649,14 @@ export default function DerivBot() {
                         <div>
                           <label style={{ fontSize: 9, color: C.muted, letterSpacing: 2, display: "block", marginBottom: 4 }}>AUTO STAKE</label>
                           <input type="number" value={autoStake} onChange={e => setAutoStake(e.target.value)} min="0.35"
-                            style={{ width: "100%", background: C.bg2, border: `1px solid ${C.border}`, color: C.white, borderRadius: 4, padding: "6px 8px", fontFamily: "inherit", fontSize: 13, outline: "none" }} />
+                            style={{ width: "100%", background: C.bg2, border: `1px solid ${C.border}`, color: C.white, borderRadius: 4, padding: "6px 8px", fontFamily: "inherit", fontSize: 13, outline: "none" }}
+                          />
                         </div>
                         <div>
                           <label style={{ fontSize: 9, color: C.muted, letterSpacing: 2, display: "block", marginBottom: 4 }}>MAX TRADES</label>
                           <input type="number" value={maxTrades} onChange={e => setMaxTrades(e.target.value)} min="1"
-                            style={{ width: "100%", background: C.bg2, border: `1px solid ${C.border}`, color: C.white, borderRadius: 4, padding: "6px 8px", fontFamily: "inherit", fontSize: 13, outline: "none" }} />
+                            style={{ width: "100%", background: C.bg2, border: `1px solid ${C.border}`, color: C.white, borderRadius: 4, padding: "6px 8px", fontFamily: "inherit", fontSize: 13, outline: "none" }}
+                          />
                         </div>
                       </div>
 
@@ -577,7 +666,8 @@ export default function DerivBot() {
                         MARTINGALE
                         {martingale && (
                           <input type="number" value={martFactor} onChange={e => setMartFactor(e.target.value)} min="1.1" max="5" step="0.1"
-                            style={{ width: 50, background: C.bg2, border: `1px solid ${C.border}`, color: C.yellow, borderRadius: 4, padding: "2px 6px", fontFamily: "inherit", fontSize: 12, outline: "none", marginLeft: 4 }} />
+                            style={{ width: 50, background: C.bg2, border: `1px solid ${C.border}`, color: C.yellow, borderRadius: 4, padding: "2px 6px", fontFamily: "inherit", fontSize: 12, outline: "none" }}
+                          />
                         )}
                       </label>
 
@@ -589,12 +679,12 @@ export default function DerivBot() {
 
                       {!botRunning ? (
                         <button onClick={startAutoBot} disabled={!!openContract} className="btn-success"
-                          style={{ background: C.green, border: "none", color: C.bg0, borderRadius: 4, padding: "9px 0", fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 13, cursor: "pointer", letterSpacing: 2 }}>
+                          style={{ background: C.green, border: "none", color: C.bg0, borderRadius: 4, padding: "9px 0", fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 13, cursor: openContract ? "default" : "pointer", letterSpacing: 1 }}>
                           ▶▶ START BOT
                         </button>
                       ) : (
                         <button onClick={stopAutoBot} className="btn-danger"
-                          style={{ background: C.red, border: "none", color: C.white, borderRadius: 4, padding: "9px 0", fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 13, cursor: "pointer", letterSpacing: 2 }}>
+                          style={{ background: C.red, border: "none", color: C.white, borderRadius: 4, padding: "9px 0", fontFamily: "'Rajdhani', sans-serif", fontWeight: 700, fontSize: 13, cursor: "pointer", letterSpacing: 1 }}>
                           ■ STOP BOT
                         </button>
                       )}
@@ -618,7 +708,7 @@ export default function DerivBot() {
                     <div style={{ padding: 24, textAlign: "center", color: C.muted, fontSize: 12 }}>No trades yet</div>
                   )}
                   {trades.map((t, i) => (
-                    <div key={t.id || i} className="trade-row" style={{ display: "grid", gridTemplateColumns: "60px 70px 80px 70px 1fr", gap: 8, padding: "8px 16px", borderBottom: `1px solid ${C.border}22`, alignItems: "center", fontSize: 11 }}>
+                    <div key={t.id || i} className="trade-row" style={{ display: "grid", gridTemplateColumns: "60px 70px 80px 70px 1fr", gap: 8, padding: "8px 16px", borderBottom: `1px solid ${C.border}11` }}>
                       <span style={{ color: t.type === "CALL" ? C.green : C.red, fontWeight: 700 }}>{t.type === "CALL" ? "▲" : "▼"} {t.type}</span>
                       <span style={{ color: C.muted }}>{t.symbol}</span>
                       <span style={{ color: t.status === "won" ? C.green : C.red, fontWeight: 700, textAlign: "right" }}>
